@@ -23,8 +23,8 @@ function calculateExpiration(option) {
         '1month': 30 * 86400 * 1000,
         '3months': 90 * 86400 * 1000,
         '6months': 180 * 86400 * 1000,
-        // '1year': 365 * 86400 * 1000,
-        // 'permanent': 0
+        '1year': 365 * 86400 * 1000,
+        'permanent': 365 * 86400 * 1000 * 10
     };
     return option in durations ? now + durations[option] : 0;
 }
@@ -48,13 +48,358 @@ async function validateTurnstile(token, secretKey) {
     });
     
     return await result.json();
-  }
-  
+}
 
 async function handleRequest(request) {
     const url = new URL(request.url);
     const path = url.pathname.split('/')[1];
     const params = url.searchParams;
+
+    // 处理管理员登录和界面
+    if (path === 'admin') {
+        // 处理管理员登录POST请求
+        if (request.method === 'POST') {
+            const data = await request.json();
+            if (data.action === 'login' && data.password === ADMIN_PASSWORD) {
+                return new Response(JSON.stringify({ success: true }), {
+                    headers: { 'Content-Type': 'application/json' }
+                });
+            } else if (data.action === 'create') {
+                // 管理员创建短链接
+                if (!await checkURL(data.url)) {
+                    return new Response(JSON.stringify({error: 'URL不合法'}), {status: 400});
+                }
+
+                // 生成短码
+                let key = data.customSuffix || await randomString();
+                // if (await LINKS.get(key)) {
+                //     return new Response(JSON.stringify({error: '短码已存在'}), {status: 409});
+                // }
+
+                // 存储元数据
+                const meta = {
+                    url: data.url,
+                    created: Date.now(),
+                    expires: calculateExpiration(data.expire || 'permanent'),
+                    visits: 0
+                };
+                await LINKS.put(key, JSON.stringify(meta));
+                return new Response(JSON.stringify({key: `/${key}`}));
+            }
+            return new Response(JSON.stringify({ error: '密码错误' }), {
+                status: 401,
+                headers: { 'Content-Type': 'application/json' }
+            });
+        }
+
+        // 返回管理员登录页面
+        const adminHtml = `
+        <!DOCTYPE html>
+        <html lang="zh-CN">
+        <head>
+            <meta charset="UTF-8">
+            <link rel="icon" type="image/x-icon" href="https://qsim.top/favicon.ico">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>短链管理后台</title>
+            <style>
+                :root {
+                    --primary: #4F46E5;
+                    --success: #10B981;
+                    --danger: #EF4444;
+                    --bg: #f8fafc;
+                }
+                * {
+                    box-sizing: border-box;
+                    font-family: 'Segoe UI', system-ui, sans-serif;
+                }
+                body {
+                    margin: 0;
+                    padding: 2rem;
+                    min-height: 100vh;
+                    background: linear-gradient(135deg, #f1f5f9 0%, #e2e8f0 100%);
+                }
+                .container {
+                    max-width: 400px;
+                    margin: 0 auto;
+                    background: white;
+                    border-radius: 1rem;
+                    box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1);
+                    padding: 2rem;
+                }
+                h1 {
+                    color: #1e293b;
+                    margin: 0 0 2rem;
+                    font-size: 2rem;
+                }
+                .form-group {
+                    margin-bottom: 1.3rem;
+                }
+                .form-group:last-child {
+                    margin-bottom: 0;
+                }
+                label {
+                    display: block;
+                    margin-bottom: 0.5rem;
+                    color: #64748b;
+                    font-weight: 500;
+                }
+                input, select {
+                    width: 100%;
+                    padding: 0.75rem 4px;
+                    font-size: 1rem;
+                    transition: border-color 0.2s;
+                    border: none;
+                    border-bottom: 1px solid rgba(0, 0, 0, .42);
+                }
+                input:focus, select:focus {
+                    outline: none;
+                    border-color: var(--primary);
+                    box-shadow: 0 1px 0px 0px rgba(0, 0, 0, 0.2);
+                }
+                .form-group:focus-within label{
+                    color: #1e293b;
+                }
+                button {
+                    width: 100%;
+                    padding: 1rem;
+                    background: var(--primary);
+                    color: white;
+                    border: none;
+                    border-radius: 0.5rem;
+                    font-size: 1.1rem;
+                    font-weight: 600;
+                    cursor: pointer;
+                    transition: opacity 0.2s;
+                }
+                button:hover {
+                    opacity: 0.9;
+                }
+                .result-box {
+                    margin-top: 2rem;
+                    padding: 1.5rem;
+                    background: #f8fafc;
+                    border-radius: 0.5rem;
+                    display: none;
+                }
+                .result-box.active {
+                    display: block;
+                }
+                .short-url {
+                    color: var(--primary);
+                    font-weight: 600;
+                    word-break: break-all;
+                }
+                .copy-btn {
+                    margin-top: 1rem;
+                    background: var(--success);
+                    padding: 0.5rem 1rem;
+                    border-radius: 0.5rem;
+                    color: white;
+                    border: none;
+                    cursor: pointer;
+                }
+                .error-box {
+                    color: var(--danger);
+                    padding: 1rem;
+                    background: #fee2e2;
+                    border-radius: 0.5rem;
+                    margin-bottom: 1rem;
+                    display: none;
+                }
+                button:disabled {
+                    background-color: #aaa;
+                    cursor: not-allowed;
+                    color: #eee;
+                }
+                #loginForm {
+                    display: block;
+                }
+                #adminPanel {
+                    display: none;
+                }
+                footer p, footer a {
+                    color: gray;
+                    text-decoration: none;
+                    text-align: center;
+                }
+                @media (max-width: 640px) {
+                    body {
+                        padding: 1rem;
+                    }
+                    .container {
+                        padding: 1.5rem;
+                    }
+                }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>管理后台</h1>
+                
+                <div class="error-box" id="error"></div>
+                
+                <!-- 登录表单 -->
+                <form id="loginForm">
+                    <div class="form-group">
+                        <label for="password">管理员密码</label>
+                        <input type="password" id="password" required placeholder="请输入密码">
+                    </div>
+                    
+                    <button type="button" id="login-btn">登录</button>
+                </form>
+                
+                <!-- 管理员面板 -->
+                <div id="adminPanel">
+                    <h1>短链生成</h1>
+                    <form id="shortenForm">
+                        <div class="form-group">
+                            <label for="url">长链接地址</label>
+                            <input type="url" id="url" required placeholder="https://example.com/very-long-url">
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="customSuffix">自定义后缀 (选填)</label>
+                            <input type="text" id="customSuffix" placeholder="如: mylink">
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="expire">有效期</label>
+                            <select id="expire">
+                                <option value="1week">1周</option>
+                                <option value="1month">1个月</option>
+                                <option value="3months">3个月</option>
+                                <option value="6months">6个月</option>
+                                <option value="1year">1年</option>
+                                <option value="permanent">永久</option>
+                            </select>
+                        </div>
+                        
+                        <button type="button" id="submit-btn">生成短链</button>
+                    </form>
+                    
+                    <div class="result-box" id="result">
+                        <div>生成的短链接：</div>
+                        <a class="short-url" id="shortUrl" target="_blank"></a>
+                        <button class="copy-btn" onclick="copyUrl()">复制链接</button>
+                    </div>
+                </div>
+            </div>
+
+            <script>
+                const loginForm = document.getElementById('loginForm');
+                const adminPanel = document.getElementById('adminPanel');
+                const form = document.getElementById('shortenForm');
+                const errorBox = document.getElementById('error');
+                const resultBox = document.getElementById('result');
+                const shortUrl = document.getElementById('shortUrl');
+                const loginBtn = document.getElementById('login-btn');
+                const submitBtn = document.getElementById('submit-btn');
+                
+                // 管理员登录
+                loginBtn.addEventListener('click', async () => {
+                    const password = document.getElementById('password').value;
+                    if (!password) {
+                        showError('请输入密码');
+                        return;
+                    }
+                    
+                    loginBtn.disabled = true;
+                    
+                    try {
+                        const response = await fetch('/admin', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({
+                                action: 'login',
+                                password: password
+                            })
+                        });
+                        
+                        const result = await response.json();
+                        
+                        if (response.ok && result.success) {
+                            errorBox.style.display = 'none';
+                            loginForm.style.display = 'none';
+                            adminPanel.style.display = 'block';
+                        } else {
+                            showError(result.error || '密码错误');
+                        }
+                    } catch (err) {
+                        showError('网络请求失败，请稍后重试');
+                    } finally {
+                        loginBtn.disabled = false;
+                    }
+                });
+                
+                // 生成短链接
+                submitBtn.addEventListener('click', async () => {
+                    if (!form.url.value) {
+                        showError('请输入长链接地址');
+                        return;
+                    }
+                    
+                    submitBtn.disabled = true;
+                    
+                    try {
+                        const response = await fetch('/admin', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({
+                                action: 'create',
+                                url: form.url.value,
+                                customSuffix: form.customSuffix.value,
+                                expire: form.expire.value
+                            })
+                        });
+                        
+                        const result = await response.json();
+                        
+                        if (response.ok) {
+                            errorBox.style.display = 'none';
+                            const fullUrl = window.location.origin + result.key;
+                            shortUrl.href = fullUrl;
+                            shortUrl.textContent = fullUrl;
+                            resultBox.classList.add('active');
+                        } else {
+                            showError(result.error || '请求失败');
+                        }
+                    } catch (err) {
+                        showError('网络请求失败，请稍后重试');
+                    } finally {
+                        submitBtn.disabled = false;
+                    }
+                });
+                
+                function showError(message) {
+                    errorBox.textContent = message;
+                    errorBox.style.display = 'block';
+                    resultBox.classList.remove('active');
+                }
+                function copyUrl() {
+                    navigator.clipboard.writeText(shortUrl.href)
+                        .then(() => alert('链接已复制到剪贴板'))
+                        .catch(() => alert('复制失败，请手动复制'));
+                }
+                
+                function showError(message) {
+                    errorBox.textContent = message;
+                    errorBox.style.display = 'block';
+                    resultBox.classList.remove('active');
+                }
+            </script>
+            <footer><p>© <a href="//haorwen.top">haorwen</a></p><p>© <a href="//qsim.top">QSIM</a></p></footer>
+        </body>
+        </html>
+        `;
+        
+        return new Response(adminHtml, {
+            headers: { 'Content-Type': 'text/html; charset=UTF-8' }
+        });
+    }
 
     // 优先处理短链接重定向
     if (path && path !== 'urlshort') {
@@ -73,8 +418,8 @@ async function handleRequest(request) {
             }
 
             // 更新访问次数
-            meta.visits = (meta.visits || 0) + 1;
-            await LINKS.put(path, JSON.stringify(meta));
+            // meta.visits = (meta.visits || 0) + 1;
+            // await LINKS.put(path, JSON.stringify(meta));
 
             return Response.redirect(`https://return-x.netlify.app/return/all/?url=${encodeURIComponent(meta.url.replace(/^https?:\/\//, ''))}`, 302);
             //直接跳转 return Response.redirect(meta.url, 302);
@@ -82,8 +427,6 @@ async function handleRequest(request) {
             return new Response(htmlerror, {status: 404}); //注意没后台管理
         }
     }
-
-    // 管理后台功能,没做
 
     // 处理POST请求
     if (request.method === 'POST' && path == 'urlshort') {
@@ -102,11 +445,6 @@ async function handleRequest(request) {
             return new Response(JSON.stringify({error: 'URL不合法'}), {status: 400});
         }
 
-        // 高级功能验证
-        // if ((data.customSuffix || data.expire === '1year') && data.password !== ADMIN_PASSWORD) {
-        //     return new Response(JSON.stringify({error: '需要管理员密码'}), {status: 403});
-        // }
-
         // 生成短码
         let key = data.customSuffix || await randomString();
         if (await LINKS.get(key)) {
@@ -117,20 +455,14 @@ async function handleRequest(request) {
         const meta = {
             url: data.url,
             created: Date.now(),
-            expires: calculateExpiration(data.expire || 'permanent'),
+            expires: calculateExpiration(data.expire || '6months'), // 默认6个月
             visits: 0
         };
         await LINKS.put(key, JSON.stringify(meta));
         return new Response(JSON.stringify({key: `/${key}`}));
     }
 
-    // 默认返回前端页面，由于使用了${siteKey}，所以无法使用
-    // const page = await fetch('https://return-x.netlify.app/short-url/');
-    // if (url.pathname == '/') {
-    //     return new Response(await page.text(), {
-    //         headers: {'Content-Type': 'text/html; charset=UTF-8'}
-    //     });
-    // }
+    // 默认返回前端页面
     const html = `
     <!DOCTYPE html>
 <html lang="zh-CN">
@@ -311,8 +643,6 @@ async function handleRequest(request) {
                     <option value="1month">1个月</option>
                     <option value="3months">3个月</option>
                     <option value="6months">6个月</option>
-                    <!-- <option value="1year">1年</option> -->
-                    <!-- <option value="permanent">永久</option> -->
                 </select>
             </div>
             
@@ -432,7 +762,7 @@ async function handleRequest(request) {
             }
         });
     </script>
-    <footer><p>© <a href="//qsim.top">QSIM</a></p></footer>
+    <footer><p>© <a href="//haorwen.top">haorwen</a></p><p>© <a href="//qsim.top">QSIM</a></p></footer>
 </body>
 </html>
     `;
@@ -443,6 +773,10 @@ async function handleRequest(request) {
         },
         });
     }
+    
+    // 未匹配的路径返回404
+    return new Response(html404, {status: 404});
 }
 
 addEventListener('fetch', e => e.respondWith(handleRequest(e.request)));
+
